@@ -280,6 +280,7 @@ type clientQUICConnection struct {
 	udpDisabled bool
 	udpAccess   sync.RWMutex
 	udpConnMap  map[uint32]*udpPacketConn
+	waitClose   bool //karing
 }
 
 func (c *clientQUICConnection) active() bool {
@@ -293,7 +294,23 @@ func (c *clientQUICConnection) active() bool {
 		return false
 	default:
 	}
-	return true
+	c.udpAccess.Lock()       //karing fix udp connection not released
+	waitClose := c.waitClose //karing fix udp connection not released
+	c.udpAccess.Unlock()     //karing fix udp connection not released
+	return !waitClose        //karing fix udp connection not released
+
+	//return true            //karing fix udp connection not released
+}
+
+func (c *clientQUICConnection) tryClose() { //karing fix udp connection not released
+	c.udpAccess.Lock()
+	left := len(c.udpConnMap)
+	c.waitClose = left == 0
+	waitClose := c.waitClose
+	c.udpAccess.Unlock()
+	if waitClose {
+		c.closeWithError(nil)
+	}
 }
 
 func (c *clientQUICConnection) closeWithError(err error) {
@@ -363,7 +380,7 @@ func (c *clientConn) RemoteAddr() net.Addr {
 }
 
 func (c *clientConn) Close() error {
-	c.parent.closeWithError(nil) //karing fix udp connection not released
+	c.parent.tryClose() //karing fix udp connection not released
 	c.Stream.CancelRead(0)
 	return c.Stream.Close()
 }
