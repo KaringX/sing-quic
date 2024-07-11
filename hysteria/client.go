@@ -193,6 +193,7 @@ func (c *Client) DialConn(ctx context.Context, destination M.Socksaddr) (net.Con
 	}
 	return &clientConn{
 		Stream:      stream,
+		parent:      conn, //karing fix udp connection not released
 		destination: destination,
 	}, nil
 }
@@ -306,6 +307,7 @@ func (c *clientQUICConnection) closeWithError(err error) {
 
 type clientConn struct {
 	quic.Stream
+	parent         *clientQUICConnection //karing fix udp connection not released
 	destination    M.Socksaddr
 	requestWritten bool
 	responseRead   bool
@@ -361,6 +363,7 @@ func (c *clientConn) RemoteAddr() net.Addr {
 }
 
 func (c *clientConn) Close() error {
+	c.parent.closeWithError(nil) //karing fix udp connection not released
 	c.Stream.CancelRead(0)
 	return c.Stream.Close()
 }
