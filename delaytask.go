@@ -21,6 +21,7 @@ type Job struct {
 
 // Task defines a task.
 type Task struct {
+	atomWaitCnt atomic.Int64
 	running     bool
 	lock        sync.RWMutex
 	tm          sync.Map
@@ -28,7 +29,6 @@ type Task struct {
 	quitCh      chan bool
 	ctx         context.Context
 	cancel      context.CancelFunc
-	atomWaitCnt int64
 }
 
 // New will create a task.
@@ -75,9 +75,9 @@ func (t *Task) AddJob(j *Job) {
 	if j.Delay > 0 {
 		j.timer = time.NewTimer(j.Delay)
 		j.whenExecute = time.Duration(time.Now().UnixNano()) + j.Delay
-		atomic.AddInt64(&t.atomWaitCnt, 1)
+		t.atomWaitCnt.Add(1)
 		go func(ctx context.Context) {
-			defer atomic.AddInt64(&t.atomWaitCnt, -1)
+			defer t.atomWaitCnt.Add(-1)
 			select {
 			case <-j.timer.C:
 				if t.running {
@@ -111,9 +111,9 @@ func (t *Task) AddJobFn(id string, fn func(), delay ...time.Duration) {
 		j.Delay = delay[0]
 		j.timer = time.NewTimer(j.Delay)
 		j.whenExecute = time.Duration(time.Now().UnixNano()) + j.Delay
-		atomic.AddInt64(&t.atomWaitCnt, 1)
+		t.atomWaitCnt.Add(1)
 		go func(ctx context.Context) {
-			defer atomic.AddInt64(&t.atomWaitCnt, -1)
+			defer t.atomWaitCnt.Add(-1)
 			select {
 			case <-j.timer.C:
 				if t.running {
@@ -182,7 +182,7 @@ func (t *Task) Reset(id string, d time.Duration) bool {
 func (t *Task) Stop() <-chan bool {
 	t.cancel()
 	for {
-		if atomic.LoadInt64(&t.atomWaitCnt) == 0 {
+		if t.atomWaitCnt.Load() == 0 {
 			break
 		}
 		time.Sleep(time.Millisecond * 10)
@@ -195,7 +195,7 @@ func (t *Task) Stop() <-chan bool {
 // GracefulExit the task until all jobs are completed.
 func (t *Task) GracefulExit() <-chan bool {
 	for {
-		if atomic.LoadInt64(&t.atomWaitCnt) == 0 {
+		if t.atomWaitCnt.Load() == 0 {
 			break
 		}
 		time.Sleep(time.Millisecond * 10)
