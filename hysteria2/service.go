@@ -115,7 +115,7 @@ func (s *Service[U]) UpdateUsers(userList []U, passwordList []string) {
 
 func (s *Service[U]) Start(conn net.PacketConn) error {
 	if s.salamanderPassword != "" {
-		conn = NewSalamanderConn(conn, []byte(s.salamanderPassword))
+		conn = NewSalamanderConn(conn, []byte(s.salamanderPassword), false) //https://github.com/morgenanno/sing-quic/
 	}
 	err := qtls.ConfigureHTTP3(s.tlsConfig)
 	if err != nil {
