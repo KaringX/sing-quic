@@ -2,6 +2,7 @@ package hysteria2
 
 import (
 	"context"
+	"fmt" //https://github.com/morgenanno/sing-quic/
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/sagernet/sing-quic/hysteria"
 	hyCC "github.com/sagernet/sing-quic/hysteria/congestion"
 	"github.com/sagernet/sing-quic/hysteria2/internal/protocol"
+	hop "github.com/sagernet/sing-quic/udphop" //https://github.com/morgenanno/sing-quic/
 	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -44,6 +46,8 @@ type ClientOptions struct {
 	Password           string
 	TLSConfig          aTLS.Config
 	UDPDisabled        bool
+	HopPorts           string //https://github.com/morgenanno/sing-quic/
+	HopInterval        int    //https://github.com/morgenanno/sing-quic/
 }
 
 type Client struct {
@@ -59,6 +63,8 @@ type Client struct {
 	tlsConfig          aTLS.Config
 	quicConfig         *quic.Config
 	udpDisabled        bool
+	hopPorts           string //https://github.com/morgenanno/sing-quic/
+	hopInterval        time.Duration //https://github.com/morgenanno/sing-quic/
 
 	connAccess sync.RWMutex
 	conn       *clientQUICConnection
@@ -91,6 +97,8 @@ func NewClient(options ClientOptions) (*Client, error) {
 		tlsConfig:          options.TLSConfig,
 		quicConfig:         quicConfig,
 		udpDisabled:        options.UDPDisabled,
+		hopPorts:           options.HopPorts, //https://github.com/morgenanno/sing-quic/
+		hopInterval:        time.Duration(options.HopInterval) * time.Second, //https://github.com/morgenanno/sing-quic/
 	}, nil
 }
 
@@ -118,9 +126,18 @@ func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
 		return nil, err
 	}
 	var packetConn net.PacketConn
-	packetConn = bufio.NewUnbindPacketConn(udpConn)
+	if c.hopPorts != "" {//https://github.com/morgenanno/sing-quic/
+		packetConn, err = hop.NewUDPHopPacketConn(c.serverAddr.AddrString(), c.hopPorts, c.hopInterval, func() (net.PacketConn, error) {
+			return c.dialer.ListenPacket(c.ctx, c.serverAddr)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("hop.NewUDPHopPacketConn: %w", err)
+		}
+	} else {
+		packetConn = bufio.NewUnbindPacketConn(udpConn)
+	}
 	if c.salamanderPassword != "" {
-		packetConn = NewSalamanderConn(packetConn, []byte(c.salamanderPassword))
+		packetConn = NewSalamanderConn(packetConn, []byte(c.salamanderPassword), c.hopPorts != "")//https://github.com/morgenanno/sing-quic/
 	}
 	var quicConn quic.EarlyConnection
 	http3Transport, err := qtls.CreateTransport(packetConn, &quicConn, c.serverAddr, c.tlsConfig, c.quicConfig)
