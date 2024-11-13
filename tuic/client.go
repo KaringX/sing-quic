@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	qtls "github.com/sagernet/sing-quic"
+	"github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/buf"
@@ -19,8 +19,6 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	aTLS "github.com/sagernet/sing/common/tls"
 )
-
-var taskId = "closeIdle"
 
 type ClientOptions struct {
 	Context           context.Context
@@ -86,14 +84,12 @@ func NewClient(options ClientOptions) (*Client, error) {
 func (c *Client) offer(ctx context.Context) (*clientQUICConnection, error) {
 	conn := c.conn
 	if conn != nil && conn.active() {
-		c.conn.task.Cancel(taskId) //karing
 		return conn, nil
 	}
 	c.connAccess.Lock()
 	defer c.connAccess.Unlock()
 	conn = c.conn
 	if conn != nil && conn.active() {
-		c.conn.task.Cancel(taskId) //karing
 		return conn, nil
 	}
 	conn, err := c.offerNew(ctx)
@@ -124,7 +120,6 @@ func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
 		rawConn:    udpConn,
 		connDone:   make(chan struct{}),
 		udpConnMap: make(map[uint16]*udpPacketConn),
-		task:       qtls.New(), //karing
 	}
 	go func() {
 		hErr := c.clientHandshake(quicConn)
@@ -229,7 +224,6 @@ type clientQUICConnection struct {
 	udpAccess    sync.RWMutex
 	udpConnMap   map[uint16]*udpPacketConn
 	udpSessionID uint16
-	task         *qtls.Task //karing
 }
 
 func (c *clientQUICConnection) active() bool {
@@ -243,25 +237,11 @@ func (c *clientQUICConnection) active() bool {
 		return false
 	default:
 	}
-
 	return true
-}
-
-func (c *clientQUICConnection) tryClose() { //karing fix udp connection not released
-	c.task.Cancel(taskId)
-	c.task.AddJobFn(taskId, func() {
-		c.udpAccess.Lock()
-		left := len(c.udpConnMap)
-		c.udpAccess.Unlock()
-		if left == 0 {
-			c.closeWithError(nil)
-		}
-	}, time.Second*30)
 }
 
 func (c *clientQUICConnection) closeWithError(err error) {
 	c.closeOnce.Do(func() {
-		c.task.Stop() //karing
 		c.connErr = err
 		close(c.connDone)
 		_ = c.quicConn.CloseWithError(0, "")
@@ -281,13 +261,11 @@ func (c *clientConn) NeedHandshake() bool {
 }
 
 func (c *clientConn) Read(b []byte) (n int, err error) {
-	c.parent.task.Cancel(taskId) //karing
 	n, err = c.Stream.Read(b)
 	return n, baderror.WrapQUIC(err)
 }
 
 func (c *clientConn) Write(b []byte) (n int, err error) {
-	c.parent.task.Cancel(taskId) //karing
 	if !c.requestWritten {
 		request := buf.NewSize(2 + AddressSerializer.AddrPortLen(c.destination) + len(b))
 		defer request.Release()
@@ -311,7 +289,6 @@ func (c *clientConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *clientConn) Close() error {
-	c.parent.tryClose() //karing fix udp connection not released
 	c.Stream.CancelRead(0)
 	return c.Stream.Close()
 }

@@ -15,7 +15,7 @@ import (
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/congestion"
 	"github.com/sagernet/quic-go/http3"
-	qtls "github.com/sagernet/sing-quic"
+	"github.com/sagernet/sing-quic"
 	congestion_meta1 "github.com/sagernet/sing-quic/congestion_meta1"
 	congestion_meta2 "github.com/sagernet/sing-quic/congestion_meta2"
 	"github.com/sagernet/sing-quic/hysteria"
@@ -31,8 +31,6 @@ import (
 	"github.com/sagernet/sing/common/ntp"
 	aTLS "github.com/sagernet/sing/common/tls"
 )
-
-var taskId = "closeIdle"
 
 type ClientOptions struct {
 	Context            context.Context
@@ -195,7 +193,6 @@ func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
 		connDone:    make(chan struct{}),
 		udpDisabled: !authResponse.UDPEnabled,
 		udpConnMap:  make(map[uint32]*udpPacketConn),
-		task:        qtls.New(), //karing
 	}
 	if !c.udpDisabled {
 		go c.loopMessages(conn)
@@ -215,7 +212,6 @@ func (c *Client) DialConn(ctx context.Context, destination M.Socksaddr) (net.Con
 	}
 	return &clientConn{
 		Stream:      stream,
-		parent:      conn, //karing fix udp connection not released
 		destination: destination,
 	}, nil
 }
@@ -264,7 +260,6 @@ type clientQUICConnection struct {
 	udpAccess    sync.RWMutex
 	udpConnMap   map[uint32]*udpPacketConn
 	udpSessionID uint32
-	task         *qtls.Task //karing
 }
 
 func (c *clientQUICConnection) active() bool {
@@ -278,25 +273,11 @@ func (c *clientQUICConnection) active() bool {
 		return false
 	default:
 	}
-
 	return true
-}
-
-func (c *clientQUICConnection) tryClose() { //karing fix udp connection not released
-	c.task.Cancel(taskId)
-	c.task.AddJobFn(taskId, func() {
-		c.udpAccess.Lock()
-		left := len(c.udpConnMap)
-		c.udpAccess.Unlock()
-		if left == 0 {
-			c.closeWithError(nil)
-		}
-	}, time.Second*30)
 }
 
 func (c *clientQUICConnection) closeWithError(err error) {
 	c.closeOnce.Do(func() {
-		c.task.Stop() //karing
 		c.connErr = err
 		close(c.connDone)
 		_ = c.quicConn.CloseWithError(0, "")
@@ -306,7 +287,6 @@ func (c *clientQUICConnection) closeWithError(err error) {
 
 type clientConn struct {
 	quic.Stream
-	parent         *clientQUICConnection //karing fix udp connection not released
 	destination    M.Socksaddr
 	requestWritten bool
 	responseRead   bool
@@ -317,7 +297,6 @@ func (c *clientConn) NeedHandshake() bool {
 }
 
 func (c *clientConn) Read(p []byte) (n int, err error) {
-	c.parent.task.Cancel(taskId) //karing
 	if c.responseRead {
 		n, err = c.Stream.Read(p)
 		return n, baderror.WrapQUIC(err)
@@ -336,7 +315,6 @@ func (c *clientConn) Read(p []byte) (n int, err error) {
 }
 
 func (c *clientConn) Write(p []byte) (n int, err error) {
-	c.parent.task.Cancel(taskId) //karing
 	if !c.requestWritten {
 		buffer := protocol.WriteTCPRequest(c.destination.String(), p)
 		defer buffer.Release()
@@ -360,7 +338,6 @@ func (c *clientConn) RemoteAddr() net.Addr {
 }
 
 func (c *clientConn) Close() error {
-	c.parent.tryClose() //karing fix udp connection not released
 	c.Stream.CancelRead(0)
 	return c.Stream.Close()
 }
