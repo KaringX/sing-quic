@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	"github.com/sagernet/sing-quic"
+	qtls "github.com/sagernet/sing-quic"
 	hyCC "github.com/sagernet/sing-quic/hysteria/congestion"
 	hop "github.com/sagernet/sing-quic/udphop" //https://github.com/morgenanno/sing-quic/
 	"github.com/sagernet/sing/common/baderror"
