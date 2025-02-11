@@ -127,7 +127,7 @@ func (s *Service[U]) UpdateUsers(userList []U, passwordList []string) {
 
 func (s *Service[U]) Start(conn net.PacketConn) error {
 	if s.xplusPassword != "" {
-		conn = NewXPlusPacketConn(conn, []byte(s.xplusPassword))
+		conn = NewXPlusPacketConn(conn, []byte(s.xplusPassword), false) //https://github.com/morgenanno/sing-quic/
 	}
 	listener, err := qtls.Listen(conn, s.tlsConfig, s.quicConfig)
 	if err != nil {
