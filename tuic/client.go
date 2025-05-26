@@ -246,6 +246,7 @@ func (c *clientQUICConnection) closeWithError(err error) {
 		close(c.connDone)
 		_ = c.quicConn.CloseWithError(0, "")
 		_ = c.rawConn.Close()
+		c.quicConn.SetCongestionControl(nil) //karing
 	})
 }
 
