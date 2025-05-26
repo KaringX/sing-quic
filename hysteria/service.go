@@ -77,7 +77,6 @@ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
 		MaxConnectionReceiveWindow:     DefaultConnReceiveWindow,
 		MaxIdleTimeout:                 DefaultMaxIdleTimeout,
 		KeepAlivePeriod:                DefaultKeepAlivePeriod,
-		DisablePathManager:             true,
 	}
 	if options.StreamReceiveWindow != 0 {
 		quicConfig.InitialStreamReceiveWindow = options.StreamReceiveWindow
@@ -128,7 +127,7 @@ func (s *Service[U]) UpdateUsers(userList []U, passwordList []string) {
 
 func (s *Service[U]) Start(conn net.PacketConn) error {
 	if s.xplusPassword != "" {
-		conn = NewXPlusPacketConn(conn, []byte(s.xplusPassword), false) //https://github.com/morgenanno/sing-quic/
+		conn = NewXPlusPacketConn(conn, []byte(s.xplusPassword))
 	}
 	listener, err := qtls.Listen(conn, s.tlsConfig, s.quicConfig)
 	if err != nil {
@@ -160,6 +159,7 @@ func (s *Service[U]) loopConnections(listener qtls.Listener) {
 			Service:    s,
 			ctx:        s.ctx,
 			quicConn:   connection,
+			source:     M.SocksaddrFromNet(connection.RemoteAddr()).Unwrap(),
 			connDone:   make(chan struct{}),
 			udpConnMap: make(map[uint32]*udpPacketConn),
 		}
@@ -171,6 +171,7 @@ type serverSession[U comparable] struct {
 	*Service[U]
 	ctx          context.Context
 	quicConn     quic.Connection
+	source       M.Socksaddr
 	connAccess   sync.Mutex
 	connDone     chan struct{}
 	connErr      error
@@ -243,7 +244,7 @@ func (s *serverSession[U]) handleStream(stream quic.Stream) error {
 	}
 	ctx := auth.ContextWithUser(s.ctx, s.authUser)
 	if !request.UDP {
-		s.handler.NewConnectionEx(ctx, &serverConn{Stream: stream}, M.SocksaddrFromNet(s.quicConn.RemoteAddr()).Unwrap(), M.ParseSocksaddrHostPort(request.Host, request.Port), nil)
+		s.handler.NewConnectionEx(ctx, &serverConn{Stream: stream}, s.source, M.ParseSocksaddrHostPort(request.Host, request.Port), nil)
 	} else {
 		if s.udpDisabled {
 			return WriteServerResponse(stream, ServerResponse{
@@ -274,7 +275,7 @@ func (s *serverSession[U]) handleStream(stream quic.Stream) error {
 			return err
 		}
 		newCtx, newConn := canceler.NewPacketConn(udpConn.ctx, udpConn, s.udpTimeout)
-		go s.handler.NewPacketConnectionEx(newCtx, newConn, M.SocksaddrFromNet(s.quicConn.RemoteAddr()).Unwrap(), M.ParseSocksaddrHostPort(request.Host, request.Port), nil)
+		go s.handler.NewPacketConnectionEx(newCtx, newConn, s.source, M.ParseSocksaddrHostPort(request.Host, request.Port), nil)
 		holdBuffer := make([]byte, 1024)
 		for {
 			_, hErr := stream.Read(holdBuffer)

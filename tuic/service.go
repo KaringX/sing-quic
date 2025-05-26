@@ -73,7 +73,6 @@ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
 		Allow0RTT:               options.ZeroRTTHandshake,
 		MaxIncomingStreams:      1 << 60,
 		MaxIncomingUniStreams:   1 << 60,
-		DisablePathManager:      true,
 	}
 	switch options.CongestionControl {
 	case "":
@@ -164,6 +163,7 @@ func (s *Service[U]) handleConnection(connection quic.Connection) {
 		Service:    s,
 		ctx:        s.ctx,
 		quicConn:   connection,
+		source:     M.SocksaddrFromNet(connection.RemoteAddr()).Unwrap(),
 		connDone:   make(chan struct{}),
 		authDone:   make(chan struct{}),
 		udpConnMap: make(map[uint16]*udpPacketConn),
@@ -175,6 +175,7 @@ type serverSession[U comparable] struct {
 	*Service[U]
 	ctx        context.Context
 	quicConn   quic.Connection
+	source     M.Socksaddr
 	connAccess sync.Mutex
 	connDone   chan struct{}
 	connErr    error
@@ -249,7 +250,7 @@ func (s *serverSession[U]) handleUniStream(stream quic.ReceiveStream) error {
 			return E.New("authentication: unknown user ", uuid.UUID(userUUID))
 		}
 		handshakeState := s.quicConn.ConnectionState()
-		tuicToken, err := handshakeState.TLS.ExportKeyingMaterial(string(userUUID[:]), []byte(s.passwordMap[user]), 32)
+		tuicToken, err := handshakeState.ExportKeyingMaterial(string(userUUID[:]), []byte(s.passwordMap[user]), 32)
 		if err != nil {
 			return E.Cause(err, "authentication: export keying material")
 		}
@@ -361,7 +362,7 @@ func (s *serverSession[U]) handleStream(stream quic.Stream) error {
 	} else {
 		conn = bufio.NewCachedConn(conn, buffer)
 	}
-	s.handler.NewConnectionEx(auth.ContextWithUser(s.ctx, s.authUser), conn, M.SocksaddrFromNet(s.quicConn.RemoteAddr()).Unwrap(), destination, nil)
+	s.handler.NewConnectionEx(auth.ContextWithUser(s.ctx, s.authUser), conn, s.source, destination, nil)
 	return nil
 }
 

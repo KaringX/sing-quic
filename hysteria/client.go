@@ -2,7 +2,6 @@ package hysteria
 
 import (
 	"context"
-	"fmt" //https://github.com/morgenanno/sing-quic/
 	"io"
 	"math"
 	"net"
@@ -14,9 +13,8 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	qtls "github.com/sagernet/sing-quic"
+	"github.com/sagernet/sing-quic"
 	hyCC "github.com/sagernet/sing-quic/hysteria/congestion"
-	hop "github.com/sagernet/sing-quic/udphop" //https://github.com/morgenanno/sing-quic/
 	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/debug"
@@ -41,8 +39,6 @@ type ClientOptions struct {
 	Password      string
 	TLSConfig     aTLS.Config
 	UDPDisabled   bool
-	HopPorts      string //https://github.com/morgenanno/sing-quic/
-	HopInterval   int //https://github.com/morgenanno/sing-quic/
 
 	// Legacy options
 
@@ -66,8 +62,6 @@ type Client struct {
 	tlsConfig     aTLS.Config
 	quicConfig    *quic.Config
 	udpDisabled   bool
-	hopPorts      string //https://github.com/morgenanno/sing-quic/
-	hopInterval   time.Duration //https://github.com/morgenanno/sing-quic/
 
 	connAccess sync.RWMutex
 	conn       *clientQUICConnection
@@ -115,8 +109,6 @@ func NewClient(options ClientOptions) (*Client, error) {
 		if err != nil {
 			return nil, err
 		}
-	if options.HopInterval < 5 { //https://github.com/morgenanno/sing-quic/
-		options.HopInterval = 5
 	}
 	return &Client{
 		ctx:           options.Context,
@@ -133,8 +125,6 @@ func NewClient(options ClientOptions) (*Client, error) {
 		tlsConfig:     options.TLSConfig,
 		quicConfig:    quicConfig,
 		udpDisabled:   options.UDPDisabled,
-		hopPorts:      options.HopPorts, //https://github.com/morgenanno/sing-quic/
-		hopInterval:   time.Duration(options.HopInterval) * time.Second, //https://github.com/morgenanno/sing-quic/
 	}, nil
 }
 
@@ -213,25 +203,7 @@ func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
 	if err != nil {
 		return nil, err
 	}
-<<<<<<< HEAD
 	quicConn, err := qtls.Dial(c.ctx, packetConn, c.serverAddr, c.tlsConfig, c.quicConfig)
-=======
-	var packetConn net.PacketConn
-	if c.hopPorts != "" { //https://github.com/morgenanno/sing-quic/
-		packetConn, err = hop.NewUDPHopPacketConn(c.serverAddr.AddrString(), c.hopPorts, c.hopInterval, func() (net.PacketConn, error) {
-			return c.dialer.ListenPacket(c.ctx, c.serverAddr)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("hop.NewUDPHopPacketConn: %w", err)
-		}
-	} else {
-		packetConn = bufio.NewUnbindPacketConn(udpConn)
-	}
-	if c.xplusPassword != "" {
-		packetConn = NewXPlusPacketConn(packetConn, []byte(c.xplusPassword), c.hopPorts != "") //https://github.com/morgenanno/sing-quic/
-	}
-	quicConn, err := qtls.Dial(c.ctx, packetConn, udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig)
->>>>>>> karing_v0.4.0
 	if err != nil {
 		packetConn.Close()
 		return nil, err

@@ -16,9 +16,9 @@ import (
 
 const xplusSaltLen = 16
 
-func NewXPlusPacketConn(conn net.PacketConn, key []byte, disableVectorised bool) net.PacketConn { //https://github.com/morgenanno/sing-quic/
+func NewXPlusPacketConn(conn net.PacketConn, key []byte) net.PacketConn {
 	vectorisedWriter, isVectorised := bufio.CreateVectorisedPacketWriter(conn)
-	if isVectorised && !disableVectorised { //https://github.com/morgenanno/sing-quic/
+	if isVectorised {
 		return &VectorisedXPlusConn{
 			XPlusPacketConn: XPlusPacketConn{
 				PacketConn: conn,
