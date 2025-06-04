@@ -2,15 +2,19 @@ package hysteria
 
 import (
 	"errors"
+	"math"
 	"math/rand"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
+	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 )
 
@@ -23,7 +27,7 @@ const (
 type HopPacketConn struct {
 	dialFunc        func(M.Socksaddr) (net.PacketConn, error)
 	destination     M.Socksaddr
-	ports           []uint16
+	ports           []string
 	interval        time.Duration
 	access          sync.Mutex
 	prevConn        net.PacketConn
@@ -37,10 +41,42 @@ type HopPacketConn struct {
 	done            bool
 }
 
+func HopParsePorts(serverPorts []string) ([]uint16, error) { //karing
+	var portList []uint16
+	for _, portRange := range serverPorts {
+		if !strings.Contains(portRange, ":") {
+			return nil, E.New("bad port range: ", portRange)
+		}
+		subIndex := strings.Index(portRange, ":")
+		var (
+			start, end uint64
+			err        error
+		)
+		if subIndex > 0 {
+			start, err = strconv.ParseUint(portRange[:subIndex], 10, 16)
+			if err != nil {
+				return nil, E.Cause(err, E.Cause(err, "bad port range: ", portRange))
+			}
+		}
+		if subIndex == len(portRange)-1 {
+			end = math.MaxUint16
+		} else {
+			end, err = strconv.ParseUint(portRange[subIndex+1:], 10, 16)
+			if err != nil {
+				return nil, E.Cause(err, E.Cause(err, "bad port range: ", portRange))
+			}
+		}
+		for i := start; i <= end; i++ {
+			portList = append(portList, uint16(i))
+		}
+	}
+	return portList, nil
+}
+
 func NewHopPacketConn(
 	dialFunc func(M.Socksaddr) (net.PacketConn, error),
 	destination M.Socksaddr,
-	ports []uint16,
+	ports []string, //karing
 	interval time.Duration,
 ) (*HopPacketConn, error) {
 	if interval == 0 {
@@ -66,11 +102,12 @@ func NewHopPacketConn(
 }
 
 func (c *HopPacketConn) nextAddr() M.Socksaddr {
-	c.portIndex = rand.Intn(len(c.ports))
+	ports, _ := HopParsePorts(c.ports)  //karing
+	c.portIndex = rand.Intn(len(ports)) //karing
 	return M.Socksaddr{
 		Addr: c.destination.Addr,
 		Fqdn: c.destination.Fqdn,
-		Port: c.ports[c.portIndex],
+		Port: ports[c.portIndex], //karing
 	}
 }
 

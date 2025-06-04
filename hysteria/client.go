@@ -7,13 +7,11 @@ import (
 	"net"
 	"os"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/sagernet/quic-go"
-	"github.com/sagernet/sing-quic"
+	qtls "github.com/sagernet/sing-quic"
 	hyCC "github.com/sagernet/sing-quic/hysteria/congestion"
 	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/bufio"
@@ -53,7 +51,7 @@ type Client struct {
 	logger        logger.Logger
 	brutalDebug   bool
 	serverAddr    M.Socksaddr
-	serverPorts   []uint16
+	serverPorts   []string //karing
 	hopInterval   time.Duration
 	sendBPS       uint64
 	receiveBPS    uint64
@@ -102,10 +100,10 @@ func NewClient(options ClientOptions) (*Client, error) {
 	} else if options.ReceiveBPS < MinSpeedBPS {
 		return nil, E.New("invalid download speed")
 	}
-	var serverPorts []uint16
+	//var serverPorts []uint16 //karing
 	if len(options.ServerPorts) > 0 {
 		var err error
-		serverPorts, err = ParsePorts(options.ServerPorts)
+		_, err = ParsePorts(options.ServerPorts) //karing
 		if err != nil {
 			return nil, err
 		}
@@ -116,7 +114,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 		logger:        options.Logger,
 		brutalDebug:   options.BrutalDebug,
 		serverAddr:    options.ServerAddress,
-		serverPorts:   serverPorts,
+		serverPorts:   options.ServerPorts, //karing
 		hopInterval:   options.HopInterval,
 		sendBPS:       options.SendBPS,
 		receiveBPS:    options.ReceiveBPS,
@@ -129,35 +127,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 }
 
 func ParsePorts(serverPorts []string) ([]uint16, error) {
-	var portList []uint16
-	for _, portRange := range serverPorts {
-		if !strings.Contains(portRange, ":") {
-			return nil, E.New("bad port range: ", portRange)
-		}
-		subIndex := strings.Index(portRange, ":")
-		var (
-			start, end uint64
-			err        error
-		)
-		if subIndex > 0 {
-			start, err = strconv.ParseUint(portRange[:subIndex], 10, 16)
-			if err != nil {
-				return nil, E.Cause(err, E.Cause(err, "bad port range: ", portRange))
-			}
-		}
-		if subIndex == len(portRange)-1 {
-			end = math.MaxUint16
-		} else {
-			end, err = strconv.ParseUint(portRange[subIndex+1:], 10, 16)
-			if err != nil {
-				return nil, E.Cause(err, E.Cause(err, "bad port range: ", portRange))
-			}
-		}
-		for i := start; i <= end; i++ {
-			portList = append(portList, uint16(i))
-		}
-	}
-	return portList, nil
+	return HopParsePorts(serverPorts) //karing
 }
 
 func (c *Client) offer(ctx context.Context) (*clientQUICConnection, error) {
