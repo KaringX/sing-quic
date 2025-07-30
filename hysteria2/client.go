@@ -14,7 +14,7 @@ import (
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/congestion"
 	"github.com/sagernet/quic-go/http3"
-	"github.com/sagernet/sing-quic"
+	qtls "github.com/sagernet/sing-quic"
 	congestion_meta1 "github.com/sagernet/sing-quic/congestion_meta1"
 	congestion_meta2 "github.com/sagernet/sing-quic/congestion_meta2"
 	"github.com/sagernet/sing-quic/hysteria"
@@ -52,7 +52,7 @@ type Client struct {
 	logger             logger.Logger
 	brutalDebug        bool
 	serverAddr         M.Socksaddr
-	serverPorts        []uint16
+	serverPorts        []string //karing
 	hopInterval        time.Duration
 	sendBPS            uint64
 	receiveBPS         uint64
@@ -80,10 +80,10 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if len(options.TLSConfig.NextProtos()) == 0 {
 		options.TLSConfig.SetNextProtos([]string{http3.NextProtoH3})
 	}
-	var serverPorts []uint16
+	//var serverPorts []uint16 //karing
 	if len(options.ServerPorts) > 0 {
 		var err error
-		serverPorts, err = hysteria.ParsePorts(options.ServerPorts)
+		_, err = hysteria.ParsePorts(options.ServerPorts) //karing
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +94,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 		logger:             options.Logger,
 		brutalDebug:        options.BrutalDebug,
 		serverAddr:         options.ServerAddress,
-		serverPorts:        serverPorts,
+		serverPorts:        options.ServerPorts, //karing
 		hopInterval:        options.HopInterval,
 		sendBPS:            options.SendBPS,
 		receiveBPS:         options.ReceiveBPS,
