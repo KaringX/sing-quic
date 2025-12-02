@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	"github.com/sagernet/sing-quic"
+	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/buf"
@@ -48,6 +48,7 @@ type Client struct {
 
 	connAccess sync.Mutex
 	conn       *clientQUICConnection
+	cancel     context.CancelFunc //karing
 }
 
 func NewClient(options ClientOptions) (*Client, error) {
@@ -96,21 +97,22 @@ func (c *Client) offer(ctx context.Context) (*clientQUICConnection, error) {
 }
 
 func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
-	udpConn, err := c.dialer.DialContext(c.ctx, "udp", c.serverAddr)
+	ctx, c.cancel = context.WithCancel(ctx)                        //karing
+	udpConn, err := c.dialer.DialContext(ctx, "udp", c.serverAddr) //karing
 	if err != nil {
 		return nil, err
 	}
 	var quicConn quic.Connection
 	if c.zeroRTTHandshake {
-		quicConn, err = qtls.DialEarly(c.ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig)
+		quicConn, err = qtls.DialEarly(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig) //karing
 	} else {
-		quicConn, err = qtls.Dial(c.ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig)
+		quicConn, err = qtls.Dial(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig) //karing
 	}
 	if err != nil {
 		udpConn.Close()
 		return nil, E.Cause(err, "open connection")
 	}
-	setCongestion(c.ctx, quicConn, c.congestionControl)
+	setCongestion(ctx, quicConn, c.congestionControl) //karing
 	conn := &clientQUICConnection{
 		quicConn:   quicConn,
 		rawConn:    udpConn,
@@ -204,6 +206,9 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 }
 
 func (c *Client) CloseWithError(err error) error {
+	if c.cancel != nil { //karing
+		c.cancel()
+	}
 	c.connAccess.Lock()
 	defer c.connAccess.Unlock()
 	conn := c.conn
