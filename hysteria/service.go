@@ -12,11 +12,10 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	"github.com/sagernet/sing-quic"
+	qtls "github.com/sagernet/sing-quic"
 	hyCC "github.com/sagernet/sing-quic/hysteria/congestion"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/auth"
-	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/canceler"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -170,7 +169,7 @@ func (s *Service[U]) loopConnections(listener qtls.Listener) {
 type serverSession[U comparable] struct {
 	*Service[U]
 	ctx          context.Context
-	quicConn     quic.Connection
+	quicConn     *quic.Conn
 	connAccess   sync.Mutex
 	connDone     chan struct{}
 	connErr      error
@@ -236,7 +235,7 @@ func (s *serverSession[U]) loopStreams() {
 	}
 }
 
-func (s *serverSession[U]) handleStream(stream quic.Stream) error {
+func (s *serverSession[U]) handleStream(stream *quic.Stream) error {
 	request, err := ReadClientRequest(stream)
 	if err != nil {
 		return E.New("read TCP request")
@@ -317,7 +316,7 @@ func (s *serverSession[U]) closeWithError0(errorCode int, err error) {
 }
 
 type serverConn struct {
-	quic.Stream
+	*quic.Stream
 	responseWritten bool
 }
 
@@ -344,7 +343,7 @@ func (c *serverConn) HandshakeSuccess() error {
 
 func (c *serverConn) Read(p []byte) (n int, err error) {
 	n, err = c.Stream.Read(p)
-	return n, baderror.WrapQUIC(err)
+	return n, qtls.WrapError(err)
 }
 
 func (c *serverConn) Write(p []byte) (n int, err error) {
@@ -354,11 +353,11 @@ func (c *serverConn) Write(p []byte) (n int, err error) {
 			OK: true,
 		})
 		if err != nil {
-			return 0, baderror.WrapQUIC(err)
+			return 0, qtls.WrapError(err)
 		}
 	}
 	n, err = c.Stream.Write(p)
-	return n, baderror.WrapQUIC(err)
+	return n, qtls.WrapError(err)
 }
 
 func (c *serverConn) LocalAddr() net.Addr {

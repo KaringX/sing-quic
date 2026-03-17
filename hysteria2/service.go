@@ -14,7 +14,8 @@ import (
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/congestion"
 	"github.com/sagernet/quic-go/http3"
-	"github.com/sagernet/sing-quic"
+	"github.com/sagernet/quic-go/quicvarint"
+	qtls "github.com/sagernet/sing-quic"
 	congestion_meta1 "github.com/sagernet/sing-quic/congestion_meta1"
 	congestion_meta2 "github.com/sagernet/sing-quic/congestion_meta2"
 	"github.com/sagernet/sing-quic/hysteria"
@@ -22,7 +23,6 @@ import (
 	"github.com/sagernet/sing-quic/hysteria2/internal/protocol"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/auth"
-	"github.com/sagernet/sing/common/baderror"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -152,7 +152,7 @@ func (s *Service[U]) loopConnections(listener qtls.Listener) {
 	}
 }
 
-func (s *Service[U]) handleConnection(connection quic.Connection) {
+func (s *Service[U]) handleConnection(connection *quic.Conn) {
 	session := &serverSession[U]{
 		Service:    s,
 		ctx:        s.ctx,
@@ -161,8 +161,8 @@ func (s *Service[U]) handleConnection(connection quic.Connection) {
 		udpConnMap: make(map[uint32]*udpPacketConn),
 	}
 	httpServer := http3.Server{
-		Handler:        session,
-		StreamHijacker: session.handleStream0,
+		Handler:          session,
+		StreamDispatcher: session.dispatchStream,
 	}
 	_ = httpServer.ServeQUICConn(connection)
 	_ = connection.CloseWithError(0, "")
@@ -171,7 +171,7 @@ func (s *Service[U]) handleConnection(connection quic.Connection) {
 type serverSession[U comparable] struct {
 	*Service[U]
 	ctx           context.Context
-	quicConn      quic.Connection
+	quicConn      *quic.Conn
 	connAccess    sync.Mutex
 	connDone      chan struct{}
 	connErr       error
@@ -246,13 +246,17 @@ func (s *serverSession[U]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-//nolint:staticcheck
-func (s *serverSession[U]) handleStream0(frameType http3.FrameType, id quic.ConnectionTracingID, stream quic.Stream, err error) (bool, error) {
+func (s *serverSession[U]) dispatchStream(frameType http3.FrameType, stream *quic.Stream, err error) (bool, error) {
 	if !s.authenticated || err != nil {
 		return false, nil
 	}
 	if frameType != protocol.FrameTypeTCPRequest {
 		return false, nil
+	}
+	_, err = quicvarint.Read(quicvarint.NewReader(stream))
+	if err != nil {
+		s.logger.Error(E.Cause(err, "seek frame type"))
+		return true, nil
 	}
 	go func() {
 		hErr := s.handleStream(stream)
@@ -265,7 +269,7 @@ func (s *serverSession[U]) handleStream0(frameType http3.FrameType, id quic.Conn
 	return true, nil
 }
 
-func (s *serverSession[U]) handleStream(stream quic.Stream) error {
+func (s *serverSession[U]) handleStream(stream *quic.Stream) error {
 	destinationString, err := protocol.ReadTCPRequest(stream)
 	if err != nil {
 		return E.New("read TCP request")
@@ -293,7 +297,7 @@ func (s *serverSession[U]) closeWithError(err error) {
 }
 
 type serverConn struct {
-	quic.Stream
+	*quic.Stream
 	responseWritten bool
 }
 
@@ -319,7 +323,7 @@ func (c *serverConn) HandshakeSuccess() error {
 
 func (c *serverConn) Read(p []byte) (n int, err error) {
 	n, err = c.Stream.Read(p)
-	return n, baderror.WrapQUIC(err)
+	return n, qtls.WrapError(err)
 }
 
 func (c *serverConn) Write(p []byte) (n int, err error) {
@@ -329,12 +333,12 @@ func (c *serverConn) Write(p []byte) (n int, err error) {
 		defer buffer.Release()
 		_, err = c.Stream.Write(buffer.Bytes())
 		if err != nil {
-			return 0, baderror.WrapQUIC(err)
+			return 0, qtls.WrapError(err)
 		}
 		return len(p), nil
 	}
 	n, err = c.Stream.Write(p)
-	return n, baderror.WrapQUIC(err)
+	return n, qtls.WrapError(err)
 }
 
 func (c *serverConn) LocalAddr() net.Addr {
