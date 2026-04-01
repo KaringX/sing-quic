@@ -12,10 +12,9 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	"github.com/sagernet/sing-quic"
+	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/auth"
-	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -158,7 +157,7 @@ func (s *Service[U]) Close() error {
 	)
 }
 
-func (s *Service[U]) handleConnection(connection quic.Connection) {
+func (s *Service[U]) handleConnection(connection *quic.Conn) {
 	setCongestion(s.ctx, connection, s.congestionControl)
 	session := &serverSession[U]{
 		Service:    s,
@@ -174,7 +173,7 @@ func (s *Service[U]) handleConnection(connection quic.Connection) {
 type serverSession[U comparable] struct {
 	*Service[U]
 	ctx        context.Context
-	quicConn   quic.Connection
+	quicConn   *quic.Conn
 	connAccess sync.Mutex
 	connDone   chan struct{}
 	connErr    error
@@ -216,7 +215,7 @@ func (s *serverSession[U]) loopUniStreams() {
 	}
 }
 
-func (s *serverSession[U]) handleUniStream(stream quic.ReceiveStream) error {
+func (s *serverSession[U]) handleUniStream(stream *quic.ReceiveStream) error {
 	defer stream.CancelRead(0)
 	buffer := buf.New()
 	defer buffer.Release()
@@ -328,7 +327,7 @@ func (s *serverSession[U]) loopStreams() {
 	}
 }
 
-func (s *serverSession[U]) handleStream(stream quic.Stream) error {
+func (s *serverSession[U]) handleStream(stream *quic.Stream) error {
 	buffer := buf.NewSize(2 + M.MaxSocksaddrLength)
 	defer buffer.Release()
 	_, err := buffer.ReadAtLeastFrom(stream, 2)
@@ -398,18 +397,18 @@ func (s *serverSession[U]) closeWithError(err error) {
 }
 
 type serverConn struct {
-	quic.Stream
+	*quic.Stream
 	destination M.Socksaddr
 }
 
 func (c *serverConn) Read(p []byte) (n int, err error) {
 	n, err = c.Stream.Read(p)
-	return n, baderror.WrapQUIC(err)
+	return n, qtls.WrapError(err)
 }
 
 func (c *serverConn) Write(p []byte) (n int, err error) {
 	n, err = c.Stream.Write(p)
-	return n, baderror.WrapQUIC(err)
+	return n, qtls.WrapError(err)
 }
 
 func (c *serverConn) LocalAddr() net.Addr {

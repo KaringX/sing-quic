@@ -113,25 +113,42 @@ func (c *HopPacketConn) hopLoop() {
 
 func (c *HopPacketConn) hop() {
 	c.access.Lock()
-	defer c.access.Unlock()
 	if c.done {
+		c.access.Unlock()
 		return
 	}
 	nextAddr := c.nextAddr()
+	c.access.Unlock()
+
 	newConn, err := c.dialFunc(nextAddr)
 	if err != nil {
 		return
 	}
-	if c.prevConn != nil {
-		c.prevConn.Close()
+
+	var oldPrevConn net.PacketConn
+	var readBufferSize int
+	var writeBufferSize int
+	c.access.Lock()
+	if c.done {
+		c.access.Unlock()
+		_ = newConn.Close()
+		return
 	}
+	oldPrevConn = c.prevConn
 	c.prevConn = c.currentConn
 	c.currentConn = newConn
-	if c.readBufferSize > 0 {
-		_ = trySetReadBuffer(newConn, c.readBufferSize)
+	readBufferSize = c.readBufferSize
+	writeBufferSize = c.writeBufferSize
+	c.access.Unlock()
+
+	if oldPrevConn != nil {
+		_ = oldPrevConn.Close()
 	}
-	if c.writeBufferSize > 0 {
-		_ = trySetWriteBuffer(newConn, c.writeBufferSize)
+	if readBufferSize > 0 {
+		_ = trySetReadBuffer(newConn, readBufferSize)
+	}
+	if writeBufferSize > 0 {
+		_ = trySetWriteBuffer(newConn, writeBufferSize)
 	}
 	go c.recvLoop(newConn)
 }
@@ -162,16 +179,23 @@ func (c *HopPacketConn) WriteTo(b []byte, _ net.Addr) (n int, err error) {
 
 func (c *HopPacketConn) Close() error {
 	c.access.Lock()
-	defer c.access.Unlock()
 	if c.done {
+		c.access.Unlock()
 		return nil
 	}
-	if c.prevConn != nil {
-		_ = c.prevConn.Close()
-	}
-	err := c.currentConn.Close()
-	close(c.doneChan)
 	c.done = true
+	close(c.doneChan)
+	prevConn := c.prevConn
+	currentConn := c.currentConn
+	c.access.Unlock()
+
+	if prevConn != nil {
+		_ = prevConn.Close()
+	}
+	var err error
+	if currentConn != nil {
+		err = currentConn.Close()
+	}
 	return err
 }
 

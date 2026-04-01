@@ -9,9 +9,8 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	"github.com/sagernet/sing-quic"
+	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -48,6 +47,7 @@ type Client struct {
 
 	connAccess sync.Mutex
 	conn       *clientQUICConnection
+	pending    *clientOffer
 }
 
 func NewClient(options ClientOptions) (*Client, error) {
@@ -83,28 +83,89 @@ func NewClient(options ClientOptions) (*Client, error) {
 
 func (c *Client) offer(ctx context.Context) (*clientQUICConnection, error) {
 	c.connAccess.Lock()
-	defer c.connAccess.Unlock()
 	conn := c.conn
 	if conn != nil && conn.active() {
+		c.connAccess.Unlock()
 		return conn, nil
 	}
-	conn, err := c.offerNew(ctx)
-	if err != nil {
-		return nil, err
+	pending := c.pending
+	if pending != nil {
+		c.connAccess.Unlock()
+		select {
+		case <-pending.done:
+			return pending.conn, pending.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	return conn, nil
+	// A pending offer is shared by concurrent callers. Do not derive offerCtx
+	// from the foreground request ctx: a timed-out request must stop waiting for
+	// the shared result, but it must not tear down the background QUIC dial that
+	// may still be reused by later requests. The connection attempt is owned by
+	// the client lifetime context instead.
+	offerCtx := c.ctx
+	if offerCtx == nil {
+		offerCtx = context.Background()
+	}
+	offerCtx, cancel := common.ContextWithCancelCause(offerCtx)
+	pending = &clientOffer{
+		done:   make(chan struct{}),
+		cancel: cancel,
+	}
+	c.pending = pending
+	c.connAccess.Unlock()
+
+	go c.completeOffer(pending, offerCtx)
+
+	select {
+	case <-pending.done:
+		return pending.conn, pending.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (c *Client) completeOffer(pending *clientOffer, offerCtx context.Context) {
+	conn, err := c.offerNew(offerCtx)
+	pending.cancel(nil)
+
+	discardErr := err
+	shouldDiscard := false
+	c.connAccess.Lock()
+	if pending.discarded {
+		shouldDiscard = true
+		if pending.cause != nil {
+			discardErr = pending.cause
+		}
+		pending.err = discardErr
+	} else {
+		pending.conn = conn
+		pending.err = err
+		if err == nil {
+			c.conn = conn
+		}
+	}
+	if c.pending == pending {
+		c.pending = nil
+	}
+	close(pending.done)
+	c.connAccess.Unlock()
+
+	if shouldDiscard && conn != nil {
+		conn.closeWithError(discardErr)
+	}
 }
 
 func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
-	udpConn, err := c.dialer.DialContext(c.ctx, "udp", c.serverAddr)
+	udpConn, err := c.dialer.DialContext(ctx, "udp", c.serverAddr)
 	if err != nil {
 		return nil, err
 	}
-	var quicConn quic.Connection
+	var quicConn *quic.Conn
 	if c.zeroRTTHandshake {
-		quicConn, err = qtls.DialEarly(c.ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig)
+		quicConn, err = qtls.DialEarly(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig)
 	} else {
-		quicConn, err = qtls.Dial(c.ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig)
+		quicConn, err = qtls.Dial(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), c.tlsConfig, c.quicConfig)
 	}
 	if err != nil {
 		udpConn.Close()
@@ -128,11 +189,10 @@ func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
 	}
 	go c.loopMessages(conn)
 	go c.loopHeartbeats(conn)
-	c.conn = conn
 	return conn, nil
 }
 
-func (c *Client) clientHandshake(conn quic.Connection) error {
+func (c *Client) clientHandshake(conn *quic.Conn) error {
 	authStream, err := conn.OpenUniStream()
 	if err != nil {
 		return E.Cause(err, "open handshake stream")
@@ -205,16 +265,35 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 
 func (c *Client) CloseWithError(err error) error {
 	c.connAccess.Lock()
-	defer c.connAccess.Unlock()
 	conn := c.conn
+	c.conn = nil
+	pending := c.pending
+	if pending != nil {
+		pending.discarded = true
+		pending.cause = err
+	}
+	c.connAccess.Unlock()
+
+	if pending != nil {
+		pending.cancel(err)
+	}
 	if conn != nil {
 		conn.closeWithError(err)
 	}
 	return nil
 }
 
+type clientOffer struct {
+	done      chan struct{}
+	cancel    func(error)
+	conn      *clientQUICConnection
+	err       error
+	discarded bool
+	cause     error
+}
+
 type clientQUICConnection struct {
-	quicConn     quic.Connection
+	quicConn     *quic.Conn
 	rawConn      io.Closer
 	closeOnce    sync.Once
 	connDone     chan struct{}
@@ -248,7 +327,7 @@ func (c *clientQUICConnection) closeWithError(err error) {
 }
 
 type clientConn struct {
-	quic.Stream
+	*quic.Stream
 	parent         *clientQUICConnection
 	destination    M.Socksaddr
 	requestWritten bool
@@ -260,7 +339,7 @@ func (c *clientConn) NeedHandshake() bool {
 
 func (c *clientConn) Read(b []byte) (n int, err error) {
 	n, err = c.Stream.Read(b)
-	return n, baderror.WrapQUIC(err)
+	return n, qtls.WrapError(err)
 }
 
 func (c *clientConn) Write(b []byte) (n int, err error) {
@@ -277,13 +356,13 @@ func (c *clientConn) Write(b []byte) (n int, err error) {
 		_, err = c.Stream.Write(request.Bytes())
 		if err != nil {
 			c.parent.closeWithError(E.Cause(err, "create new connection"))
-			return 0, baderror.WrapQUIC(err)
+			return 0, qtls.WrapError(err)
 		}
 		c.requestWritten = true
 		return len(b), nil
 	}
 	n, err = c.Stream.Write(b)
-	return n, baderror.WrapQUIC(err)
+	return n, qtls.WrapError(err)
 }
 
 func (c *clientConn) Close() error {
