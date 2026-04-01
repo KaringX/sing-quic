@@ -47,11 +47,8 @@ type Client struct {
 
 	connAccess sync.Mutex
 	conn       *clientQUICConnection
-<<<<<<< HEAD
-	cancel     context.CancelFunc //karing
-=======
 	pending    *clientOffer
->>>>>>> v0.6.1
+	cancel     context.CancelFunc //karing
 }
 
 func NewClient(options ClientOptions) (*Client, error) {
@@ -161,7 +158,7 @@ func (c *Client) completeOffer(pending *clientOffer, offerCtx context.Context) {
 }
 
 func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
-	ctx, c.cancel = context.WithCancel(ctx)                        //karing
+	ctx, c.cancel = context.WithCancel(ctx) //karing
 	udpConn, err := c.dialer.DialContext(ctx, "udp", c.serverAddr)
 	if err != nil {
 		return nil, err
