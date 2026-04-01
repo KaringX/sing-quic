@@ -27,6 +27,9 @@ const (
 	// From quiche/quic/core/quic_constants.h: kMaxInitialCongestionWindow = 200
 	MaxCongestionWindowPackets = 200
 
+	// Minimum congestion window in packets.
+	minCongestionWindowPackets = 4
+
 	// The minimum CWND to ensure delayed acks don't reduce bandwidth measurements.
 	// Does not inflate the pacing rate.
 	DefaultMinimumCongestionWindow = 4 * congestion.InitialPacketSize
@@ -286,7 +289,7 @@ func NewBbrSenderWithConfig(
 		congestionWindow:             initialCongestionWindow,
 		initialCongestionWindow:      initialCongestionWindow,
 		maxCongestionWindow:          maxCongestionWindow,
-		minCongestionWindow:          DefaultMinimumCongestionWindow,
+		minCongestionWindow:          minCongestionWindowForMaxDatagramSize(initialMaxDatagramSize),
 		highGain:                     DefaultHighGain,
 		highCWNDGain:                 DefaultHighGain,
 		pacingGain:                   1,
@@ -344,6 +347,31 @@ func NewBbrSenderWithConfig(
 	b.pacer.SetMaxDatagramSize(initialMaxDatagramSize)
 
 	return b
+}
+
+func minCongestionWindowForMaxDatagramSize(maxDatagramSize congestion.ByteCount) congestion.ByteCount {
+	return minCongestionWindowPackets * maxDatagramSize
+}
+
+func scaleByteWindowForDatagramSize(window, oldMaxDatagramSize, newMaxDatagramSize congestion.ByteCount) congestion.ByteCount {
+	if oldMaxDatagramSize == newMaxDatagramSize {
+		return window
+	}
+	return congestion.ByteCount(uint64(window) * uint64(newMaxDatagramSize) / uint64(oldMaxDatagramSize))
+}
+
+func (b *BbrSender) rescalePacketSizedWindows(maxDatagramSize congestion.ByteCount) {
+	oldMaxDatagramSize := b.maxDatagramSize
+	b.maxDatagramSize = maxDatagramSize
+	b.initialCongestionWindow = scaleByteWindowForDatagramSize(b.initialCongestionWindow, oldMaxDatagramSize, maxDatagramSize)
+	b.maxCongestionWindow = scaleByteWindowForDatagramSize(b.maxCongestionWindow, oldMaxDatagramSize, maxDatagramSize)
+	b.minCongestionWindow = scaleByteWindowForDatagramSize(b.minCongestionWindow, oldMaxDatagramSize, maxDatagramSize)
+	b.cwndToCalculateMinPacingRate = scaleByteWindowForDatagramSize(b.cwndToCalculateMinPacingRate, oldMaxDatagramSize, maxDatagramSize)
+	b.maxCongestionWindowWithNetworkParametersAdjusted = scaleByteWindowForDatagramSize(
+		b.maxCongestionWindowWithNetworkParametersAdjusted,
+		oldMaxDatagramSize,
+		maxDatagramSize,
+	)
 }
 
 // setHighCWNDGain sets the CWND gain used in STARTUP.
@@ -531,10 +559,18 @@ func (b *BbrSender) SetMaxDatagramSize(size congestion.ByteCount) {
 	if size < b.maxDatagramSize {
 		panic("cannot decrease max datagram size")
 	}
-	cwndPackets := b.congestionWindow / b.maxDatagramSize
-	b.maxDatagramSize = size
-	b.congestionWindow = cwndPackets * b.maxDatagramSize
-	b.minCongestionWindow = DefaultMinimumCongestionWindow / congestion.InitialPacketSize * size
+	oldMinCongestionWindow := b.minCongestionWindow
+	oldInitialCongestionWindow := b.initialCongestionWindow
+	b.rescalePacketSizedWindows(size)
+	switch b.congestionWindow {
+	case oldMinCongestionWindow:
+		b.congestionWindow = b.minCongestionWindow
+	case oldInitialCongestionWindow:
+		b.congestionWindow = b.initialCongestionWindow
+	default:
+		b.congestionWindow = min(b.maxCongestionWindow, max(b.congestionWindow, b.minCongestionWindow))
+	}
+	b.recoveryWindow = min(b.maxCongestionWindow, max(b.recoveryWindow, b.minCongestionWindow))
 	b.pacer.SetMaxDatagramSize(size)
 }
 
