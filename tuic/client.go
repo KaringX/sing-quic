@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -257,6 +258,12 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 		conn.udpAccess.Unlock()
 	})
 	conn.udpAccess.Lock()
+	select {
+	case <-conn.connDone:
+		conn.udpAccess.Unlock()
+		return nil, E.Errors(conn.connErr, os.ErrClosed)
+	default:
+	}
 	sessionID = conn.udpSessionID
 	conn.udpSessionID++
 	conn.udpConnMap[sessionID] = clientPacketConn
@@ -325,7 +332,14 @@ func (c *clientQUICConnection) active() bool {
 func (c *clientQUICConnection) closeWithError(err error) {
 	c.closeOnce.Do(func() {
 		c.connErr = err
+		c.udpAccess.Lock()
 		close(c.connDone)
+		udpConnMap := c.udpConnMap
+		c.udpConnMap = make(map[uint16]*udpPacketConn)
+		c.udpAccess.Unlock()
+		for _, udpConn := range udpConnMap {
+			udpConn.closeWithError(err)
+		}
 		_ = c.quicConn.CloseWithError(0, "")
 		_ = c.rawConn.Close()
 		c.quicConn.SetCongestionControl(nil) //karing
@@ -373,7 +387,11 @@ func (c *clientConn) Write(b []byte) (n int, err error) {
 
 func (c *clientConn) Close() error {
 	c.Stream.CancelRead(0)
-	return c.Stream.Close()
+	err := c.Stream.Close()
+	// quic-go's Stream.Close does not unblock a Write blocked on flow control,
+	// but a past write deadline does; buffered data and the FIN are unaffected.
+	c.Stream.SetWriteDeadline(time.Now())
+	return err
 }
 
 func (c *clientConn) LocalAddr() net.Addr {

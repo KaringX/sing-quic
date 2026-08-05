@@ -37,7 +37,7 @@ func (c *Client) handleMessage(conn *clientQUICConnection, data []byte) error {
 		message := allocMessage()
 		err := decodeUDPMessage(message, data[2:])
 		if err != nil {
-			message.release()
+			message.releaseMessage()
 			return E.Cause(err, "decode UDP message")
 		}
 		conn.handleUDPMessage(message)
@@ -85,7 +85,7 @@ func (c *Client) handleUniStream(conn *clientQUICConnection, stream *quic.Receiv
 	message := allocMessage()
 	err = readUDPMessage(message, reader)
 	if err != nil {
-		message.release()
+		message.releaseMessage()
 		return err
 	}
 	conn.handleUDPMessage(message)

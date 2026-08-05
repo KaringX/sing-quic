@@ -27,14 +27,14 @@ func NewSalamanderConn(conn net.PacketConn, password []byte) net.PacketConn {
 		return &VectorisedSalamanderPacketConn{
 			SalamanderPacketConn: SalamanderPacketConn{
 				PacketConn: conn,
-				password:   password,
+				password:   password[:len(password):len(password)],
 			},
 			writer: writer,
 		}
 	} else {
 		return &SalamanderPacketConn{
 			PacketConn: conn,
-			password:   password,
+			password:   password[:len(password):len(password)],
 		}
 	}
 }

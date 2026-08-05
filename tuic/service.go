@@ -267,7 +267,7 @@ func (s *serverSession[U]) handleUniStream(stream *quic.ReceiveStream) error {
 		message := allocMessage()
 		err = readUDPMessage(message, io.MultiReader(bytes.NewReader(buffer.From(2)), stream))
 		if err != nil {
-			message.release()
+			message.releaseMessage()
 			return err
 		}
 		s.handleUDPMessage(message, true)
@@ -393,6 +393,13 @@ func (s *serverSession[U]) closeWithError(err error) {
 	} else {
 		s.logger.Error(E.Cause(err, "connection failed"))
 	}
+	s.udpAccess.Lock()
+	udpConnMap := s.udpConnMap
+	s.udpConnMap = make(map[uint16]*udpPacketConn)
+	s.udpAccess.Unlock()
+	for _, udpConn := range udpConnMap {
+		udpConn.closeWithError(err)
+	}
 	_ = s.quicConn.CloseWithError(0, "")
 }
 
@@ -421,5 +428,9 @@ func (c *serverConn) RemoteAddr() net.Addr {
 
 func (c *serverConn) Close() error {
 	c.Stream.CancelRead(0)
-	return c.Stream.Close()
+	err := c.Stream.Close()
+	// quic-go's Stream.Close does not unblock a Write blocked on flow control,
+	// but a past write deadline does; buffered data and the FIN are unaffected.
+	c.Stream.SetWriteDeadline(time.Now())
+	return err
 }

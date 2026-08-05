@@ -1,25 +1,24 @@
 package congestion
 
 import (
+	"cmp"
 	"math"
 	"time"
 
 	"github.com/sagernet/quic-go/monotime"
-
-	"golang.org/x/exp/constraints"
 )
 
 // InfDuration is a duration of infinite length
 const InfDuration = time.Duration(math.MaxInt64)
 
-func Max[T constraints.Ordered](a, b T) T {
+func Max[T cmp.Ordered](a, b T) T {
 	if a < b {
 		return b
 	}
 	return a
 }
 
-func Min[T constraints.Ordered](a, b T) T {
+func Min[T cmp.Ordered](a, b T) T {
 	if a < b {
 		return a
 	}

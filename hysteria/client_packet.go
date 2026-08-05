@@ -22,7 +22,7 @@ func (c *Client) handleMessage(conn *clientQUICConnection, data []byte) error {
 	message := allocMessage()
 	err := decodeUDPMessage(message, data)
 	if err != nil {
-		message.release()
+		message.releaseMessage()
 		return E.Cause(err, "decode UDP message")
 	}
 	conn.handleUDPMessage(message)

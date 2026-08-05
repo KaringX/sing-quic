@@ -187,6 +187,7 @@ func (s *serverSession[U]) handleConnection() {
 		s.closeWithError0(ErrorCodeProtocolError, err)
 		return
 	}
+	_ = controlStream.SetDeadline(time.Now().Add(ProtocolTimeout))
 	clientHello, err := ReadClientHello(controlStream)
 	if err != nil {
 		s.closeWithError0(ErrorCodeProtocolError, E.Cause(err, "read client hello"))
@@ -210,6 +211,7 @@ func (s *serverSession[U]) handleConnection() {
 		s.closeWithError(err)
 		return
 	}
+	_ = controlStream.SetDeadline(time.Time{})
 	s.authUser = user
 	s.quicConn.SetCongestionControl(hyCC.NewBrutalSender(uint64(math.Min(float64(s.sendBPS), float64(clientHello.RecvBPS))), s.brutalDebug, s.logger))
 	if !s.udpDisabled {
@@ -305,6 +307,13 @@ func (s *serverSession[U]) closeWithError0(errorCode int, err error) {
 	} else {
 		s.logger.Error(E.Cause(err, "connection failed"))
 	}
+	s.udpAccess.Lock()
+	udpConnMap := s.udpConnMap
+	s.udpConnMap = make(map[uint32]*udpPacketConn)
+	s.udpAccess.Unlock()
+	for _, udpConn := range udpConnMap {
+		udpConn.closeWithError(err)
+	}
 	switch errorCode {
 	case ErrorCodeProtocolError:
 		_ = s.quicConn.CloseWithError(quic.ApplicationErrorCode(errorCode), "protocol error")
@@ -370,5 +379,9 @@ func (c *serverConn) RemoteAddr() net.Addr {
 
 func (c *serverConn) Close() error {
 	c.Stream.CancelRead(0)
-	return c.Stream.Close()
+	err := c.Stream.Close()
+	// quic-go's Stream.Close does not unblock a Write blocked on flow control,
+	// but a past write deadline does; buffered data and the FIN are unaffected.
+	c.Stream.SetWriteDeadline(time.Now())
+	return err
 }
