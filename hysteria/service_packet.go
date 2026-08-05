@@ -24,7 +24,7 @@ func (s *serverSession[U]) handleMessage(data []byte) error {
 	message := allocMessage()
 	err := decodeUDPMessage(message, data)
 	if err != nil {
-		message.release()
+		message.releaseMessage()
 		return E.Cause(err, "decode UDP message")
 	}
 	return s.handleUDPMessage(message)
@@ -35,8 +35,9 @@ func (s *serverSession[U]) handleUDPMessage(message *udpMessage) error {
 	udpConn, loaded := s.udpConnMap[message.sessionID]
 	s.udpAccess.RUnlock()
 	if !loaded || common.Done(udpConn.ctx) {
-		message.release()
-		return E.New("unknown session iD: ", message.sessionID)
+		sessionID := message.sessionID
+		message.releaseMessage()
+		return E.New("unknown session ID: ", sessionID)
 	}
 	udpConn.inputPacket(message)
 	return nil

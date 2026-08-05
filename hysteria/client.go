@@ -279,11 +279,16 @@ func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
 		packetConn.Close()
 		return nil, err
 	}
+	stopWatch := context.AfterFunc(ctx, func() {
+		_ = quicConn.CloseWithError(0, "")
+	})
+	defer stopWatch()
 	controlStream, err := quicConn.OpenStreamSync(ctx)
 	if err != nil {
 		packetConn.Close()
 		return nil, err
 	}
+	_ = controlStream.SetDeadline(time.Now().Add(ProtocolTimeout))
 	err = WriteClientHello(controlStream, ClientHello{
 		SendBPS: c.sendBPS,
 		RecvBPS: c.receiveBPS,
@@ -298,6 +303,7 @@ func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
 		packetConn.Close()
 		return nil, err
 	}
+	_ = controlStream.SetDeadline(time.Time{})
 	if !serverHello.OK {
 		packetConn.Close()
 		return nil, E.New("remote error: ", serverHello.Message)
@@ -313,6 +319,10 @@ func (c *Client) offerNew(ctx context.Context) (*clientQUICConnection, error) {
 	if !c.udpDisabled {
 		go c.loopMessages(conn)
 	}
+	go func() {
+		<-quicConn.Context().Done()
+		conn.closeWithError(context.Cause(quicConn.Context()))
+	}()
 	return conn, nil
 }
 
@@ -374,8 +384,16 @@ func (c *Client) ListenPacket(ctx context.Context, destination M.Socksaddr) (net
 		conn.udpAccess.Unlock()
 	})
 	conn.udpAccess.Lock()
+	select {
+	case <-conn.connDone:
+		conn.udpAccess.Unlock()
+		stream.Close()
+		return nil, E.Errors(conn.connErr, os.ErrClosed)
+	default:
+	}
 	if debug.Enabled {
 		if _, connExists := conn.udpConnMap[response.UDPSessionID]; connExists {
+			conn.udpAccess.Unlock()
 			stream.Close()
 			return nil, E.New("udp session id duplicated")
 		}
@@ -453,7 +471,14 @@ func (c *clientQUICConnection) active() bool {
 func (c *clientQUICConnection) closeWithError(err error) {
 	c.closeOnce.Do(func() {
 		c.connErr = err
+		c.udpAccess.Lock()
 		close(c.connDone)
+		udpConnMap := c.udpConnMap
+		c.udpConnMap = make(map[uint32]*udpPacketConn)
+		c.udpAccess.Unlock()
+		for _, udpConn := range udpConnMap {
+			udpConn.closeWithError(err)
+		}
 		_ = c.quicConn.CloseWithError(0, "")
 		_ = c.rawConn.Close()
 	})
@@ -517,5 +542,9 @@ func (c *clientConn) RemoteAddr() net.Addr {
 
 func (c *clientConn) Close() error {
 	c.Stream.CancelRead(0)
-	return c.Stream.Close()
+	err := c.Stream.Close()
+	// quic-go's Stream.Close does not unblock a Write blocked on flow control,
+	// but a past write deadline does; buffered data and the FIN are unaffected.
+	c.Stream.SetWriteDeadline(time.Now())
+	return err
 }

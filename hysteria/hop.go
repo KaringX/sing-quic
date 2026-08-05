@@ -85,7 +85,14 @@ func (c *HopPacketConn) recvLoop(conn net.PacketConn) {
 				// Only pass through timeout errors here, not permanent errors
 				// like connection closed. Connection close is normal as we close
 				// the old connection to exit this loop every time we hop.
-				c.errChan <- netErr
+				//
+				// quic-go sets a past read deadline on transport teardown, which
+				// reaches the recvLoops of both prevConn and currentConn; errChan
+				// only has room for one, so the send must abort on close.
+				select {
+				case c.errChan <- netErr:
+				case <-c.doneChan:
+				}
 			}
 			return
 		}

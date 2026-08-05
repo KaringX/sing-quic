@@ -27,7 +27,7 @@ func (s *serverSession[U]) handleMessage(data []byte) error {
 	message := allocMessage()
 	err := decodeUDPMessage(message, data)
 	if err != nil {
-		message.release()
+		message.releaseMessage()
 		return E.Cause(err, "decode UDP message")
 	}
 	s.handleUDPMessage(message)
@@ -35,18 +35,19 @@ func (s *serverSession[U]) handleMessage(data []byte) error {
 }
 
 func (s *serverSession[U]) handleUDPMessage(message *udpMessage) {
+	sessionID := message.sessionID
 	s.udpAccess.RLock()
-	udpConn, loaded := s.udpConnMap[message.sessionID]
+	udpConn, loaded := s.udpConnMap[sessionID]
 	s.udpAccess.RUnlock()
 	if !loaded || common.Done(udpConn.ctx) {
 		udpConn = newUDPPacketConn(auth.ContextWithUser(s.ctx, s.authUser), s.quicConn, func() {
 			s.udpAccess.Lock()
-			delete(s.udpConnMap, message.sessionID)
+			delete(s.udpConnMap, sessionID)
 			s.udpAccess.Unlock()
 		})
-		udpConn.sessionID = message.sessionID
+		udpConn.sessionID = sessionID
 		s.udpAccess.Lock()
-		s.udpConnMap[message.sessionID] = udpConn
+		s.udpConnMap[sessionID] = udpConn
 		s.udpAccess.Unlock()
 		newCtx, newConn := canceler.NewPacketConn(udpConn.ctx, udpConn, s.udpTimeout)
 		go s.handler.NewPacketConnectionEx(newCtx, newConn, M.SocksaddrFromNet(s.quicConn.RemoteAddr()).Unwrap(), M.ParseSocksaddr(message.destination).Unwrap(), nil)

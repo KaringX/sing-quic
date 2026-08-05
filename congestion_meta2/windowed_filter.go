@@ -1,6 +1,8 @@
 package congestion
 
 import (
+	"cmp"
+
 	"golang.org/x/exp/constraints"
 )
 
@@ -52,7 +54,7 @@ type entry[V WindowedFilterValue, T WindowedFilterTime] struct {
 
 // Compares two values and returns true if the first is greater than or equal
 // to the second.
-func MaxFilter[O constraints.Ordered](a, b O) int {
+func MaxFilter[O cmp.Ordered](a, b O) int {
 	if a > b {
 		return 1
 	} else if a < b {
@@ -63,7 +65,7 @@ func MaxFilter[O constraints.Ordered](a, b O) int {
 
 // Compares two values and returns true if the first is less than or equal
 // to the second.
-func MinFilter[O constraints.Ordered](a, b O) int {
+func MinFilter[O cmp.Ordered](a, b O) int {
 	if a < b {
 		return 1
 	} else if a > b {
