@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math"
 	"net"
 	"os"
 	"runtime"
@@ -32,16 +31,10 @@ type ServiceOptions struct {
 	ReceiveBPS    uint64
 	XPlusPassword string
 	TLSConfig     aTLS.ServerConfig
+	QUICOptions   qtls.QUICOptions
 	UDPDisabled   bool
 	UDPTimeout    time.Duration
 	Handler       ServerHandler
-
-	// Legacy options
-
-	ConnReceiveWindow   uint64
-	StreamReceiveWindow uint64
-	MaxIncomingStreams  int64
-	DisableMTUDiscovery bool
 }
 
 type ServerHandler interface {
@@ -78,20 +71,7 @@ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
 		KeepAlivePeriod:                DefaultKeepAlivePeriod,
 		DisablePathManager:             true,
 	}
-	if options.StreamReceiveWindow != 0 {
-		quicConfig.InitialStreamReceiveWindow = options.StreamReceiveWindow
-		quicConfig.MaxStreamReceiveWindow = options.StreamReceiveWindow
-	}
-	if options.ConnReceiveWindow != 0 {
-		quicConfig.InitialConnectionReceiveWindow = options.ConnReceiveWindow
-		quicConfig.MaxConnectionReceiveWindow = options.ConnReceiveWindow
-	}
-	if options.MaxIncomingStreams > 0 {
-		quicConfig.MaxIncomingStreams = int64(options.MaxIncomingStreams)
-	}
-	if options.DisableMTUDiscovery {
-		quicConfig.DisablePathMTUDiscovery = true
-	}
+	qtls.ApplyQUICOptions(quicConfig, options.QUICOptions)
 	if len(options.TLSConfig.NextProtos()) == 0 {
 		options.TLSConfig.SetNextProtos([]string{DefaultALPN})
 	}
@@ -213,7 +193,7 @@ func (s *serverSession[U]) handleConnection() {
 	}
 	_ = controlStream.SetDeadline(time.Time{})
 	s.authUser = user
-	s.quicConn.SetCongestionControl(hyCC.NewBrutalSender(uint64(math.Min(float64(s.sendBPS), float64(clientHello.RecvBPS))), s.brutalDebug, s.logger))
+	s.quicConn.SetCongestionControl(hyCC.NewBrutalSender(min(s.sendBPS, clientHello.RecvBPS), s.quicConn.InitialPacketSize(), s.brutalDebug, s.logger))
 	if !s.udpDisabled {
 		go s.loopMessages()
 	}

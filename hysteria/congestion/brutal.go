@@ -10,8 +10,6 @@ import (
 )
 
 const (
-	initMaxDatagramSize = 1252
-
 	pktInfoSlotCount           = 5 // slot index is based on seconds, so this is basically how many seconds we sample
 	minSampleCount             = 50
 	minAckRate                 = 0.8
@@ -19,7 +17,7 @@ const (
 	debugPrintInterval         = 2
 )
 
-var _ congestion.CongestionControl = &BrutalSender{}
+var _ congestion.CongestionControlEx = &BrutalSender{}
 
 type BrutalSender struct {
 	rttStats        congestion.RTTStatsProvider
@@ -40,15 +38,15 @@ type pktInfo struct {
 	LossCount uint64
 }
 
-func NewBrutalSender(bps uint64, debug bool, logger logger.Logger) *BrutalSender {
+func NewBrutalSender(bps uint64, initialMaxDatagramSize congestion.ByteCount, debug bool, logger logger.Logger) *BrutalSender {
 	bs := &BrutalSender{
 		bps:             congestion.ByteCount(bps),
-		maxDatagramSize: initMaxDatagramSize,
+		maxDatagramSize: initialMaxDatagramSize,
 		ackRate:         1,
 		debug:           debug,
 		logger:          logger,
 	}
-	bs.pacer = newPacer(func() congestion.ByteCount {
+	bs.pacer = newPacer(initialMaxDatagramSize, func() congestion.ByteCount {
 		return congestion.ByteCount(float64(bs.bps) / bs.ackRate)
 	})
 	return bs
@@ -96,8 +94,8 @@ func (b *BrutalSender) OnCongestionEvent(number congestion.PacketNumber, lostByt
 	// Stub
 }
 
-func (b *BrutalSender) OnCongestionEventEx(priorInFlight congestion.ByteCount, eventTime time.Time, ackedPackets []congestion.AckedPacketInfo, lostPackets []congestion.LostPacketInfo) {
-	currentTimestamp := eventTime.Unix()
+func (b *BrutalSender) OnCongestionEventEx(priorInFlight congestion.ByteCount, eventTime monotime.Time, ackedPackets []congestion.AckedPacketInfo, lostPackets []congestion.LostPacketInfo) {
+	currentTimestamp := int64(time.Duration(eventTime) / time.Second)
 	slot := currentTimestamp % pktInfoSlotCount
 	if b.pktInfoSlots[slot].Timestamp == currentTimestamp {
 		b.pktInfoSlots[slot].LossCount += uint64(len(lostPackets))
@@ -109,6 +107,15 @@ func (b *BrutalSender) OnCongestionEventEx(priorInFlight congestion.ByteCount, e
 		b.pktInfoSlots[slot].LossCount = uint64(len(lostPackets))
 	}
 	b.updateAckRate(currentTimestamp)
+}
+
+func (b *BrutalSender) OnAppLimited(bytesInFlight congestion.ByteCount) {
+}
+
+func (b *BrutalSender) OnPacketNeutered(packetNumber congestion.PacketNumber) {
+}
+
+func (b *BrutalSender) OnPacketsLost(leastUnacked congestion.PacketNumber) {
 }
 
 func (b *BrutalSender) SetMaxDatagramSize(size congestion.ByteCount) {

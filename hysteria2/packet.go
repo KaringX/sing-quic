@@ -117,7 +117,7 @@ func fragUDPMessage(message *udpMessage, maxPacketSize int) []*udpMessage {
 
 type udpPacketConn struct {
 	ctx             context.Context
-	cancel          common.ContextCancelCauseFunc
+	cancel          context.CancelCauseFunc
 	sessionID       uint32
 	quicConn        *quic.Conn
 	data            chan *udpMessage
@@ -131,7 +131,7 @@ type udpPacketConn struct {
 }
 
 func newUDPPacketConn(ctx context.Context, quicConn *quic.Conn, onDestroy func()) *udpPacketConn {
-	ctx, cancel := common.ContextWithCancelCause(ctx)
+	ctx, cancel := context.WithCancelCause(ctx)
 	return &udpPacketConn{
 		ctx:          ctx,
 		cancel:       cancel,
@@ -163,7 +163,7 @@ func (c *udpPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	case pkt := <-c.data:
 		n = copy(p, pkt.data.Bytes())
 		destination := M.ParseSocksaddr(pkt.destination).Unwrap()
-		if destination.IsFqdn() {
+		if destination.IsDomain() {
 			addr = destination
 		} else {
 			addr = destination.UDPAddr()

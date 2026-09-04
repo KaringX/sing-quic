@@ -4,13 +4,12 @@ import (
 	"errors"
 	"math/rand"
 	"net"
-	"os"
 	"sync"
-	"syscall"
 	"time"
 
-	"github.com/sagernet/sing/common"
+	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common/buf"
+	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 )
 
@@ -20,37 +19,48 @@ const (
 	defaultHopInterval = 30 * time.Second
 )
 
-type HopPacketConn struct {
-	dialFunc        func(M.Socksaddr) (net.PacketConn, error)
-	destination     M.Socksaddr
-	ports           []uint16
-	interval        time.Duration
-	access          sync.Mutex
-	prevConn        net.PacketConn
-	currentConn     net.PacketConn
-	portIndex       int
-	readBufferSize  int
-	writeBufferSize int
-	packetChan      chan *buf.Buffer
-	errChan         chan error
-	doneChan        chan struct{}
-	done            bool
+type HopConn struct {
+	dialFunc    func(M.Socksaddr) (net.Conn, error)
+	destination M.Socksaddr
+	ports       []uint16
+	interval    time.Duration
+	intervalMax time.Duration
+	access      sync.Mutex
+	prevConn    net.Conn
+	currentConn net.Conn
+	portIndex   int
+	packetChan  chan *buf.Buffer
+	errChan     chan error
+	doneChan    chan struct{}
+	done        bool
 }
 
-func NewHopPacketConn(
-	dialFunc func(M.Socksaddr) (net.PacketConn, error),
+func NewHopConn(
+	dialFunc func(M.Socksaddr) (net.Conn, error),
 	destination M.Socksaddr,
 	ports []uint16,
 	interval time.Duration,
-) (*HopPacketConn, error) {
-	if interval == 0 {
+	intervalMax time.Duration,
+) (*HopConn, error) {
+	if interval == 0 && intervalMax == 0 {
 		interval = defaultHopInterval
+		intervalMax = defaultHopInterval
+	} else if intervalMax == 0 {
+		intervalMax = interval
+	} else if interval == 0 {
+		return nil, E.New("min and max hop interval must both be set")
+	} else if interval > intervalMax {
+		return nil, E.New("min hop interval must not be greater than max hop interval")
 	}
-	hopConn := &HopPacketConn{
+	if interval < 5*time.Second {
+		return nil, E.New("hop interval must be at least 5 seconds")
+	}
+	hopConn := &HopConn{
 		dialFunc:    dialFunc,
 		destination: destination,
 		ports:       ports,
 		interval:    interval,
+		intervalMax: intervalMax,
 		packetChan:  make(chan *buf.Buffer, packetQueueSize),
 		errChan:     make(chan error, 1),
 		doneChan:    make(chan struct{}),
@@ -60,12 +70,13 @@ func NewHopPacketConn(
 		return nil, err
 	}
 	hopConn.currentConn = currentConn
+	qtls.SetDesiredBufferSizes(currentConn)
 	go hopConn.recvLoop(currentConn)
 	go hopConn.hopLoop()
 	return hopConn, nil
 }
 
-func (c *HopPacketConn) nextAddr() M.Socksaddr {
+func (c *HopConn) nextAddr() M.Socksaddr {
 	c.portIndex = rand.Intn(len(c.ports))
 	return M.Socksaddr{
 		Addr: c.destination.Addr,
@@ -74,10 +85,10 @@ func (c *HopPacketConn) nextAddr() M.Socksaddr {
 	}
 }
 
-func (c *HopPacketConn) recvLoop(conn net.PacketConn) {
+func (c *HopConn) recvLoop(conn net.Conn) {
 	for {
 		buffer := buf.NewSize(udpBufferSize)
-		n, _, err := conn.ReadFrom(buffer.FreeBytes())
+		n, err := conn.Read(buffer.FreeBytes())
 		if err != nil {
 			buffer.Release()
 			var netErr net.Error
@@ -105,20 +116,28 @@ func (c *HopPacketConn) recvLoop(conn net.PacketConn) {
 	}
 }
 
-func (c *HopPacketConn) hopLoop() {
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
+func (c *HopConn) nextHopInterval() time.Duration {
+	if c.interval == c.intervalMax {
+		return c.interval
+	}
+	return c.interval + time.Duration(rand.Int63n(int64(c.intervalMax-c.interval)+1))
+}
+
+func (c *HopConn) hopLoop() {
+	timer := time.NewTimer(c.nextHopInterval())
+	defer timer.Stop()
 	for {
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 			c.hop()
+			timer.Reset(c.nextHopInterval())
 		case <-c.doneChan:
 			return
 		}
 	}
 }
 
-func (c *HopPacketConn) hop() {
+func (c *HopConn) hop() {
 	c.access.Lock()
 	if c.done {
 		c.access.Unlock()
@@ -132,9 +151,7 @@ func (c *HopPacketConn) hop() {
 		return
 	}
 
-	var oldPrevConn net.PacketConn
-	var readBufferSize int
-	var writeBufferSize int
+	var oldPrevConn net.Conn
 	c.access.Lock()
 	if c.done {
 		c.access.Unlock()
@@ -144,47 +161,40 @@ func (c *HopPacketConn) hop() {
 	oldPrevConn = c.prevConn
 	c.prevConn = c.currentConn
 	c.currentConn = newConn
-	readBufferSize = c.readBufferSize
-	writeBufferSize = c.writeBufferSize
 	c.access.Unlock()
 
 	if oldPrevConn != nil {
 		_ = oldPrevConn.Close()
 	}
-	if readBufferSize > 0 {
-		_ = trySetReadBuffer(newConn, readBufferSize)
-	}
-	if writeBufferSize > 0 {
-		_ = trySetWriteBuffer(newConn, writeBufferSize)
-	}
+	qtls.SetDesiredBufferSizes(newConn)
 	go c.recvLoop(newConn)
 }
 
-func (c *HopPacketConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
+func (c *HopConn) Read(b []byte) (n int, err error) {
 	for {
 		select {
 		case packet := <-c.packetChan:
 			n = copy(b, packet.Bytes())
 			packet.Release()
-			return n, (*hopFakeAddr)(nil), nil
+			return n, nil
 		case err = <-c.errChan:
-			return 0, nil, err
+			return 0, err
 		case <-c.doneChan:
-			return 0, nil, net.ErrClosed
+			return 0, net.ErrClosed
 		}
 	}
 }
 
-func (c *HopPacketConn) WriteTo(b []byte, _ net.Addr) (n int, err error) {
+func (c *HopConn) Write(b []byte) (n int, err error) {
 	c.access.Lock()
 	defer c.access.Unlock()
 	if c.done {
 		return 0, net.ErrClosed
 	}
-	return c.currentConn.WriteTo(b, (*hopFakeAddr)(nil))
+	return c.currentConn.Write(b)
 }
 
-func (c *HopPacketConn) Close() error {
+func (c *HopConn) Close() error {
 	c.access.Lock()
 	if c.done {
 		c.access.Unlock()
@@ -206,13 +216,17 @@ func (c *HopPacketConn) Close() error {
 	return err
 }
 
-func (c *HopPacketConn) LocalAddr() net.Addr {
+func (c *HopConn) LocalAddr() net.Addr {
 	c.access.Lock()
 	defer c.access.Unlock()
 	return c.currentConn.LocalAddr()
 }
 
-func (c *HopPacketConn) SetDeadline(t time.Time) error {
+func (c *HopConn) RemoteAddr() net.Addr {
+	return c.destination.UDPAddr()
+}
+
+func (c *HopConn) SetDeadline(t time.Time) error {
 	c.access.Lock()
 	defer c.access.Unlock()
 	if c.prevConn != nil {
@@ -221,7 +235,7 @@ func (c *HopPacketConn) SetDeadline(t time.Time) error {
 	return c.currentConn.SetDeadline(t)
 }
 
-func (c *HopPacketConn) SetReadDeadline(t time.Time) error {
+func (c *HopConn) SetReadDeadline(t time.Time) error {
 	c.access.Lock()
 	defer c.access.Unlock()
 	if c.prevConn != nil {
@@ -230,71 +244,11 @@ func (c *HopPacketConn) SetReadDeadline(t time.Time) error {
 	return c.currentConn.SetReadDeadline(t)
 }
 
-func (c *HopPacketConn) SetWriteDeadline(t time.Time) error {
+func (c *HopConn) SetWriteDeadline(t time.Time) error {
 	c.access.Lock()
 	defer c.access.Unlock()
 	if c.prevConn != nil {
 		_ = c.prevConn.SetWriteDeadline(t)
 	}
 	return c.currentConn.SetWriteDeadline(t)
-}
-
-func (c *HopPacketConn) SetReadBuffer(bytes int) error {
-	c.access.Lock()
-	defer c.access.Unlock()
-	c.readBufferSize = bytes
-	if c.prevConn != nil {
-		_ = trySetReadBuffer(c.prevConn, bytes)
-	}
-	return trySetReadBuffer(c.currentConn, bytes)
-}
-
-func (c *HopPacketConn) SetWriteBuffer(bytes int) error {
-	c.access.Lock()
-	defer c.access.Unlock()
-	c.writeBufferSize = bytes
-	if c.prevConn != nil {
-		_ = trySetWriteBuffer(c.prevConn, bytes)
-	}
-	return trySetWriteBuffer(c.currentConn, bytes)
-}
-
-func (c *HopPacketConn) SyscallConn() (syscall.RawConn, error) {
-	c.access.Lock()
-	defer c.access.Unlock()
-	rawConn, isRawConn := common.Cast[syscall.Conn](c.currentConn)
-	if !isRawConn {
-		return nil, os.ErrInvalid
-	}
-	return rawConn.SyscallConn()
-}
-
-func trySetReadBuffer(pc any, bytes int) error {
-	udpConn, isUDPConn := common.Cast[interface {
-		SetReadBuffer(bytes int) error
-	}](pc)
-	if !isUDPConn {
-		return nil
-	}
-	return udpConn.SetReadBuffer(bytes)
-}
-
-func trySetWriteBuffer(pc any, bytes int) error {
-	udpConn, isUDPConn := common.Cast[interface {
-		SetWriteBuffer(bytes int) error
-	}](pc)
-	if !isUDPConn {
-		return nil
-	}
-	return udpConn.SetWriteBuffer(bytes)
-}
-
-type hopFakeAddr struct{}
-
-func (a *hopFakeAddr) Network() string {
-	return "udphop"
-}
-
-func (a *hopFakeAddr) String() string {
-	return "<udphop>"
 }

@@ -30,6 +30,7 @@ type ServiceOptions struct {
 	Context           context.Context
 	Logger            logger.Logger
 	TLSConfig         aTLS.ServerConfig
+	QUICOptions       qtls.QUICOptions
 	CongestionControl string
 	AuthTimeout       time.Duration
 	ZeroRTTHandshake  bool
@@ -74,6 +75,7 @@ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
 		MaxIncomingUniStreams:   1 << 60,
 		DisablePathManager:      true,
 	}
+	qtls.ApplyQUICOptions(quicConfig, options.QUICOptions)
 	switch options.CongestionControl {
 	case "":
 		options.CongestionControl = "cubic"

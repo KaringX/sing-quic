@@ -22,7 +22,7 @@ func NewXPlusPacketConn(conn net.PacketConn, key []byte) net.PacketConn {
 		return &VectorisedXPlusConn{
 			XPlusPacketConn: XPlusPacketConn{
 				PacketConn: conn,
-				key:        key,
+				key:        key[:len(key):len(key)],
 				rand:       rand.New(rand.NewSource(time.Now().UnixNano())),
 			},
 			writer: vectorisedWriter,
@@ -30,7 +30,7 @@ func NewXPlusPacketConn(conn net.PacketConn, key []byte) net.PacketConn {
 	} else {
 		return &XPlusPacketConn{
 			PacketConn: conn,
-			key:        key,
+			key:        key[:len(key):len(key)],
 			rand:       rand.New(rand.NewSource(time.Now().UnixNano())),
 		}
 	}
@@ -52,7 +52,7 @@ func (c *XPlusPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 		return
 	}
 	key := sha256.Sum256(append(c.key, p[:xplusSaltLen]...))
-	for i := range p[xplusSaltLen:] {
+	for i := range n - xplusSaltLen {
 		p[i] = p[xplusSaltLen+i] ^ key[i%sha256.Size]
 	}
 	n -= xplusSaltLen
@@ -115,4 +115,92 @@ func (c *VectorisedXPlusConn) WriteVectorisedPacket(buffers []*buf.Buffer, desti
 	}
 	buffers = append([]*buf.Buffer{header}, buffers...)
 	return c.writer.WriteVectorisedPacket(buffers, destination)
+}
+
+func NewXPlusClientConn(conn net.Conn, key []byte) net.Conn {
+	vectorisedWriter, isVectorised := bufio.CreateVectorisedWriter(conn)
+	if isVectorised {
+		return &VectorisedXPlusClientConn{
+			XPlusClientConn: XPlusClientConn{
+				Conn: conn,
+				key:  key[:len(key):len(key)],
+				rand: rand.New(rand.NewSource(time.Now().UnixNano())),
+			},
+			writer: vectorisedWriter,
+		}
+	} else {
+		return &XPlusClientConn{
+			Conn: conn,
+			key:  key[:len(key):len(key)],
+			rand: rand.New(rand.NewSource(time.Now().UnixNano())),
+		}
+	}
+}
+
+type XPlusClientConn struct {
+	net.Conn
+	key        []byte
+	randAccess sync.Mutex
+	rand       *rand.Rand
+}
+
+func (c *XPlusClientConn) Read(p []byte) (n int, err error) {
+	n, err = c.Conn.Read(p)
+	if err != nil {
+		return
+	} else if n < xplusSaltLen {
+		n = 0
+		return
+	}
+	key := sha256.Sum256(append(c.key, p[:xplusSaltLen]...))
+	for i := range n - xplusSaltLen {
+		p[i] = p[xplusSaltLen+i] ^ key[i%sha256.Size]
+	}
+	n -= xplusSaltLen
+	return
+}
+
+func (c *XPlusClientConn) Write(p []byte) (n int, err error) {
+	buffer := buf.NewSize(len(p) + xplusSaltLen)
+	defer buffer.Release()
+	salt := buffer.Extend(xplusSaltLen)
+	c.randAccess.Lock()
+	_, _ = c.rand.Read(salt)
+	c.randAccess.Unlock()
+	key := sha256.Sum256(append(c.key, salt...))
+	for i := range p {
+		common.Must(buffer.WriteByte(p[i] ^ key[i%sha256.Size]))
+	}
+	_, err = c.Conn.Write(buffer.Bytes())
+	if err != nil {
+		return
+	}
+	return len(p), nil
+}
+
+func (c *XPlusClientConn) Upstream() any {
+	return c.Conn
+}
+
+type VectorisedXPlusClientConn struct {
+	XPlusClientConn
+	writer N.VectorisedWriter
+}
+
+func (c *VectorisedXPlusClientConn) Write(p []byte) (n int, err error) {
+	header := buf.NewSize(xplusSaltLen)
+	defer header.Release()
+	salt := header.Extend(xplusSaltLen)
+	c.randAccess.Lock()
+	_, _ = c.rand.Read(salt)
+	c.randAccess.Unlock()
+	key := sha256.Sum256(append(c.key, salt...))
+	for i := range p {
+		p[i] ^= key[i%sha256.Size]
+	}
+	_, err = bufio.WriteVectorised(c.writer, [][]byte{header.Bytes(), p})
+	if err != nil {
+		return
+	}
+	return len(p), nil
 }

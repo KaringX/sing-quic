@@ -97,7 +97,7 @@ func newCubicSender(
 		reno:                       reno,
 		maxDatagramSize:            initialMaxDatagramSize,
 	}
-	c.pacer = newPacer(c.BandwidthEstimate)
+	c.pacer = newPacer(initialMaxDatagramSize, c.BandwidthEstimate)
 	return c
 }
 
