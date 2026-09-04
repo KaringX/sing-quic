@@ -3,7 +3,6 @@ package hysteria
 import (
 	"context"
 	"io"
-	"math"
 	"net"
 	"os"
 	"runtime"
