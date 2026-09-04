@@ -26,7 +26,7 @@ const (
 type HopConn struct {
 	dialFunc    func(M.Socksaddr) (net.Conn, error)
 	destination M.Socksaddr
-	ports       []uint16
+	ports       []string //karing
 	interval    time.Duration
 	intervalMax time.Duration
 	access      sync.Mutex
@@ -91,10 +91,11 @@ func NewHopConn(
 	if interval < 5*time.Second {
 		return nil, E.New("hop interval must be at least 5 seconds")
 	}
+
 	hopConn := &HopConn{
 		dialFunc:    dialFunc,
 		destination: destination,
-		ports:       HopParsePorts(ports), //karing
+		ports:       ports,
 		interval:    interval,
 		intervalMax: intervalMax,
 		packetChan:  make(chan *buf.Buffer, packetQueueSize),
