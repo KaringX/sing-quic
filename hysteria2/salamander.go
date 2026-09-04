@@ -107,3 +107,80 @@ func (s *VectorisedSalamanderPacketConn) WriteVectorisedPacket(buffers []*buf.Bu
 	}
 	return s.writer.WriteVectorisedPacket(append([]*buf.Buffer{header}, buffers...), destination)
 }
+
+type SalamanderConn struct {
+	net.Conn
+	password []byte
+}
+
+func NewSalamanderClientConn(conn net.Conn, password []byte) net.Conn {
+	writer, isVectorised := bufio.CreateVectorisedWriter(conn)
+	if isVectorised {
+		return &VectorisedSalamanderConn{
+			SalamanderConn: SalamanderConn{
+				Conn:     conn,
+				password: password[:len(password):len(password)],
+			},
+			writer: writer,
+		}
+	} else {
+		return &SalamanderConn{
+			Conn:     conn,
+			password: password[:len(password):len(password)],
+		}
+	}
+}
+
+func (s *SalamanderConn) Read(p []byte) (n int, err error) {
+	n, err = s.Conn.Read(p)
+	if err != nil {
+		return
+	}
+	if n <= salamanderSaltLen {
+		return
+	}
+	key := blake2b.Sum256(append(s.password, p[:salamanderSaltLen]...))
+	for index, c := range p[salamanderSaltLen:n] {
+		p[index] = c ^ key[index%blake2b.Size256]
+	}
+	return n - salamanderSaltLen, nil
+}
+
+func (s *SalamanderConn) Write(p []byte) (n int, err error) {
+	buffer := buf.NewSize(len(p) + salamanderSaltLen)
+	defer buffer.Release()
+	buffer.WriteRandom(salamanderSaltLen)
+	key := blake2b.Sum256(append(s.password, buffer.Bytes()...))
+	for index, c := range p {
+		common.Must(buffer.WriteByte(c ^ key[index%blake2b.Size256]))
+	}
+	_, err = s.Conn.Write(buffer.Bytes())
+	if err != nil {
+		return
+	}
+	return len(p), nil
+}
+
+func (s *SalamanderConn) Upstream() any {
+	return s.Conn
+}
+
+type VectorisedSalamanderConn struct {
+	SalamanderConn
+	writer N.VectorisedWriter
+}
+
+func (s *VectorisedSalamanderConn) Write(p []byte) (n int, err error) {
+	buffer := buf.NewSize(salamanderSaltLen)
+	defer buffer.Release()
+	buffer.WriteRandom(salamanderSaltLen)
+	key := blake2b.Sum256(append(s.password, buffer.Bytes()...))
+	for i := range p {
+		p[i] ^= key[i%blake2b.Size256]
+	}
+	_, err = bufio.WriteVectorised(s.writer, [][]byte{buffer.Bytes(), p})
+	if err != nil {
+		return
+	}
+	return len(p), nil
+}

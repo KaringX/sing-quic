@@ -9,10 +9,9 @@ import (
 )
 
 const (
-	initialMaxDatagramSize = congestion.ByteCount(1252)
-	MinPacingDelay         = time.Millisecond
-	TimerGranularity       = time.Millisecond
-	maxBurstSizePackets    = 10
+	MinPacingDelay      = time.Millisecond
+	TimerGranularity    = time.Millisecond
+	maxBurstSizePackets = 10
 )
 
 // The pacer implements a token bucket pacing algorithm.
@@ -23,7 +22,7 @@ type pacer struct {
 	getAdjustedBandwidth func() uint64 // in bytes/s
 }
 
-func newPacer(getBandwidth func() Bandwidth) *pacer {
+func newPacer(initialMaxDatagramSize congestion.ByteCount, getBandwidth func() Bandwidth) *pacer {
 	p := &pacer{
 		maxDatagramSize: initialMaxDatagramSize,
 		getAdjustedBandwidth: func() uint64 {
@@ -54,15 +53,38 @@ func (p *pacer) Budget(now monotime.Time) congestion.ByteCount {
 	if p.lastSentTime.IsZero() {
 		return p.maxBurstSize()
 	}
-	budget := p.budgetAtLastSent + (congestion.ByteCount(p.getAdjustedBandwidth())*congestion.ByteCount(now.Sub(p.lastSentTime).Nanoseconds()))/1e9
+	delta := now.Sub(p.lastSentTime)
+	var added congestion.ByteCount
+	if delta > 0 {
+		added = p.timeScaledBandwidth(uint64(delta.Nanoseconds()))
+	}
+	budget := p.budgetAtLastSent + added
+	if added > 0 && budget < p.budgetAtLastSent {
+		budget = MaxByteCount
+	}
 	return Min(p.maxBurstSize(), budget)
 }
 
 func (p *pacer) maxBurstSize() congestion.ByteCount {
 	return Max(
-		congestion.ByteCount(uint64((MinPacingDelay+TimerGranularity).Nanoseconds())*p.getAdjustedBandwidth())/1e9,
+		p.timeScaledBandwidth(uint64((MinPacingDelay + TimerGranularity).Nanoseconds())),
 		maxBurstSizePackets*p.maxDatagramSize,
 	)
+}
+
+// timeScaledBandwidth calculates the number of bytes that may be sent within
+// a given time interval (ns nanoseconds), based on the current bandwidth estimate.
+// It caps the scaled value to the maximum allowed burst and handles overflows.
+func (p *pacer) timeScaledBandwidth(ns uint64) congestion.ByteCount {
+	bw := p.getAdjustedBandwidth()
+	if bw == 0 {
+		return 0
+	}
+	maxBurst := maxBurstSizePackets * p.maxDatagramSize
+	if ns > math.MaxUint64/bw {
+		return maxBurst
+	}
+	return congestion.ByteCount(bw * ns / 1e9)
 }
 
 // TimeUntilSend returns when the next packet should be sent.
@@ -71,10 +93,19 @@ func (p *pacer) TimeUntilSend() monotime.Time {
 	if p.budgetAtLastSent >= p.maxDatagramSize {
 		return monotime.Time(0)
 	}
-	return p.lastSentTime.Add(Max(
-		MinPacingDelay,
-		time.Duration(math.Ceil(float64(p.maxDatagramSize-p.budgetAtLastSent)*1e9/float64(p.getAdjustedBandwidth())))*time.Nanosecond,
-	))
+	bw := p.getAdjustedBandwidth()
+	if bw == 0 {
+		return p.lastSentTime.Add(MinPacingDelay)
+	}
+	diff := 1e9 * uint64(p.maxDatagramSize-p.budgetAtLastSent)
+	// We might need to round up this value.
+	// Otherwise, we might have a budget (slightly) smaller than the datagram size when the timer expires.
+	d := diff / bw
+	// this is effectively a math.Ceil, but using only integer math
+	if diff%bw > 0 {
+		d++
+	}
+	return p.lastSentTime.Add(Max(MinPacingDelay, time.Duration(d)*time.Nanosecond))
 }
 
 func (p *pacer) SetMaxDatagramSize(s congestion.ByteCount) {
